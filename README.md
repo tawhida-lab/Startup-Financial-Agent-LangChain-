@@ -6,6 +6,10 @@ Cette application permet de téléverser des guides ministériels ou des documen
 
 ---
 
+🔗 **Démo en ligne :** [Cliquez ici pour tester l'application](https://startup-financial-agent-langchain-pnhnzpgs6hfnow2q9rc4ft.streamlit.app/)
+
+---
+
 ## 🚀 Fonctionnalités
 * **Analyse de documents officiels (RAG) :** Extraction précise des données juridiques et financières directement depuis des fichiers PDF.
 * **Zéro Hallucination :** Le modèle répond *uniquement* en se basant sur le contexte du document fourni.
