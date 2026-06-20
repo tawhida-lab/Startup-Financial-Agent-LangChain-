@@ -1,89 +1,92 @@
-import streamlit as pd
 import streamlit as st
 import os
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_hf import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_groq import ChatGroq
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
 
-# Configuration de la page
-st.set_page_config(page_title="Assistant Juridique - Startup Act", layout="wide")
-
-# Sidebar pour le téléversement
-with st.sidebar:
-    st.header("📁 Document Source")
-    uploaded_file = st.file_uploader("Téléversez le guide du Startup Act (PDF)", type="pdf")
-
+# Configuration de la page Streamlit (En premier !)
+st.set_page_config(page_title="Tunisia Startup Act - RAG Agent", page_icon="🤖", layout="wide")
 st.title("🤖 Assistant Juridique Intelligent - Startup Act Tunisie")
 st.write("Téléversez un document officiel (PDF) et posez vos questions à l'Agent IA.")
 
-# Récupération de la clé API depuis les Secrets Streamlit
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
+# Récupération de la clé de manière sécurisée via Streamlit Secrets
+groq_api_key = st.secrets.get("GROQ_API_KEY")
 
-if not GROQ_API_KEY:
-    st.error("🔑 Clé API Groq manquante dans les configurations de Streamlit Cloud.")
-elif uploaded_file is not None:
-    # Sauvegarde temporaire du fichier propre pour le lecteur PDF
-    temp_file = "temp_uploaded_file.pdf"
-    with open(temp_file, "wb") as f:
-        f.write(uploaded_file.read()) # Version simplifiée et fonctionnelle
+if not groq_api_key:
+    st.warning("⚠️ Clé GROQ_API_KEY manquante dans les Secrets de Streamlit Cloud.")
+    st.stop()
 
-    try:
-        with st.spinner("⚡ Analyse et indexation du document en cours..."):
-            # 1. Chargement et découpage du PDF
-            loader = PyPDFLoader(temp_file)
-            docs = loader.load()
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            splits = text_splitter.split_documents(docs)
+# Initialisation du LLM Groq (Llama 3.3 70B)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1, groq_api_key=groq_api_key)
 
-            # 2. Création des Embeddings et de la base FAISS
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-            vectorstore = FAISS.from_documents(splits, embeddings)
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+prompt_template = ChatPromptTemplate.from_template(
+    "Tu es un assistant juridique expert en écosystème des startups en Tunisie.\n"
+    "Réponds à la question de l'utilisateur en te basant UNIQUEMENT sur le contexte fourni ci-dessous.\n"
+    "Si tu ne trouves pas la réponse dans le contexte, dis poliment que l'information ne figure pas dans le document.\n"
+    "Fais des réponses claires, structurées et professionnelles en français.\n\n"
+    "Contexte :\n{context}\n\n"
+    "Question : {question}"
+)
 
-            # 3. Configuration de l'Agent LLM via Groq
-            llm = ChatGroq(temperature=0, model_name="llama3-3b-8192", groq_api_key=GROQ_API_KEY)
+st.sidebar.header("📁 Document Source")
+uploaded_file = st.sidebar.file_uploader("Téléversez le guide du Startup Act (PDF)", type="pdf")
 
-        st.success("✅ Document indexé avec succès ! Posez votre question ci-dessous.")
+@st.cache_resource
+def initialiser_base_vectorielle(file_path):
+    loader = PyPDFLoader(file_path)
+    documents = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = text_splitter.split_documents(documents)
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    db = FAISS.from_documents(chunks, embeddings)
+    return db.as_retriever(search_kwargs={"k": 3})
 
-        # 4. Zone de Chat pour l'utilisateur
-        user_question = st.text_input("✍️ Votre question sur le document :", placeholder="Ex: Quels sont les critères d'âge pour le label ?")
+retriever = None
 
-        if user_question:
-            with st.spinner("🤖 L'Agent IA réfléchit..."):
-                # Structure du Prompt pour éviter les hallucinations
-                system_prompt = (
-                    "Tu es un assistant juridique expert en droit des affaires et du Startup Act en Tunisie.\n"
-                    "Réponds à la question en utilisant uniquement le contexte fourni ci-dessous. "
-                    "Si tu ne connais pas la réponse ou si elle n'est pas dans le document, dis gentiment que "
-                    "l'information ne se trouve pas dans le document source. Ne réinvente rien.\n\n"
-                    "Contexte :\n{context}"
-                )
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", system_prompt),
-                    ("human", "{input}"),
-                ])
-
-                # Création de la chaîne de RAG
-                question_answer_chain = create_stuff_documents_chain(llm, prompt)
-                rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-
-                # Exécution
-                response = rag_chain.invoke({"input": user_question})
-                
-                # Affichage du résultat
-                st.subheader("💡 Réponse de l'Agent :")
-                st.write(response["answer"])
-
-    except Exception as e:
-        st.error(f"Une erreur est survenue lors du traitement : {e}")
-    finally:
-        # Nettoyage du fichier temporaire
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+if uploaded_file is not None:
+    temp_file_path = f"temp_{uploaded_file.name}"
+    with open(temp_file_path, "wb") as f:
+        # CORRECTION ICI : Utilisation de .getvalue() au lieu de .get_buffer()
+        f.write(uploaded_file.getvalue())
+    
+    with st.sidebar:
+        with st.spinner("🧠 Analyse et indexation du PDF en cours..."):
+            retriever = initialiser_base_vectorielle(temp_file_path)
+        st.success("✅ Document prêt et indexé !")
 else:
     st.info("💡 Veuillez téléverser un fichier PDF dans la barre latérale pour activer l'agent.")
+
+# Gestion de l'historique du Chat
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if question_utilisateur := st.chat_input("Posez votre question sur le Startup Act..."):
+    with st.chat_message("user"):
+        st.markdown(question_utilisateur)
+    st.session_state.messages.append({"role": "user", "content": question_utilisateur})
+    
+    with st.chat_message("assistant"):
+        if retriever is None:
+            reponse_texte = "Désolé, je ne peux pas répondre tant que vous n'avez pas téléversé de document PDF."
+            st.markdown(reponse_texte)
+        else:
+            with st.spinner("⏳ Recherche dans le document..."):
+                try:
+                    documents_trouves = retriever.invoke(question_utilisateur)
+                    contexte_fusionne = "\n\n".join([doc.page_content for doc in documents_trouves])
+                    prompt_final = prompt_template.format(context=contexte_fusionne, question=question_utilisateur)
+                    reponse = llm.invoke(prompt_final)
+                    reponse_texte = reponse.content
+                    st.markdown(reponse_texte)
+                except Exception as e:
+                    reponse_texte = f"❌ Une erreur est survenue lors de la communication avec Groq : {e}"
+                    st.error(reponse_texte)
+                    
+        st.session_state.messages.append({"role": "assistant", "content": reponse_texte})
